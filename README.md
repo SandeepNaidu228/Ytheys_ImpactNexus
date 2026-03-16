@@ -53,9 +53,33 @@
     Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 
+    ## Backend Server (AI Search)
+
+    The platform features an AI-powered FastAPI backend utilizing `thenlper/gte-large` embeddings for semantic matchmaking.
+
+    ### Setting up the Backend
+    ```bash
+    cd backend
+    python -m venv venv
+    # Activate virtual environment
+    # Windows: venv\\Scripts\\activate
+    # Mac/Linux: source venv/bin/activate
+    
+    pip install -r requirements.txt
+    ```
+
+    ### Running the API
+    Make sure your `backend/.env` or `backend/app.env` file contains your database credentials, then start the server:
+    ```bash
+    uvicorn app:app --reload --port 8000
+    ```
+    *The API will be available at `http://localhost:8000`. You can view interactive documentation at `http://localhost:8000/docs`.*
+
+
     ## Output Screenshots
 
     Here are previews showcasing the application's interface:
+
 
     ### Landing Page / Overview
     ![Screenshot of Application UI](./public/screenshots/landingpage.png)
