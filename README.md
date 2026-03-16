@@ -70,6 +70,16 @@ Here are previews showcasing the application's interface:
 ![Screenshot of Authentication UI](./public/screenshots/discoverpage.png)
 
 
+
 ---
 
-Feel free to open an issue or submit a pull request if you encounter any problems!
+## Team & Contact
+
+Developed by the **Ytheys ImpactNexus** team:
+
+- **Sandeep Naidu** - Developer
+- **Pravesh Jain** - Developer
+- **Mohith Kudumu** - Developer
+- **Sravan Kumar** - Developer
+
+If you have any questions, encounter any issues, or want to contribute, feel free to reach out to the contacts above or open an issue on the repository!
