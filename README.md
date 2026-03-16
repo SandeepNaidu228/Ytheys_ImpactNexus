@@ -58,12 +58,17 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 Here are previews showcasing the application's interface:
 
 ### Landing Page / Overview
-![Screenshot of Application UI](./public/screenshots/home-page.png)
-*(Replace the placeholder image at `public/screenshots/home-page.png` with an actual screenshot of your homepage)*
+![Screenshot of Application UI](./public/screenshots/landingpage.png)
 
 ### Authentication / Login Page
-![Screenshot of Authentication UI](./public/screenshots/auth-page.png)
-*(Replace the placeholder image at `public/screenshots/auth-page.png` with an actual screenshot of your login setup)*
+![Screenshot of Authentication UI](./public/screenshots/authpage.png)
+
+### Home Page
+![Screenshot of Application UI](./public/screenshots/homepage.png)
+
+### Discover Page
+![Screenshot of Authentication UI](./public/screenshots/discoverpage.png)
+
 
 ---
 
