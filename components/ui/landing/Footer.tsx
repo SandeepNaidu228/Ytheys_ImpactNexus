@@ -13,7 +13,7 @@ export default function Footer() {
                         
                         <div className="flex flex-col items-center sm:items-start gap-1">
                             <div className="text-[10px] uppercase tracking-[0.3em] text-neutral-500">
-                                © 2025 All Rights Reserved
+                                © 2026 All Rights Reserved
                             </div>
                         </div>
 
