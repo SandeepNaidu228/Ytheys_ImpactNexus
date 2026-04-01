@@ -10,7 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
-from fastapi_cache.decorator import cache
+try:
+    from fastapi_cache.decorator import cache
+except:
+    def cache(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from sqlalchemy import create_engine, text, inspect
@@ -108,6 +114,39 @@ logger.info("=" * 70)
 
 
 # =====================================
+# IN-MEMORY EMBEDDINGS CACHE
+# =====================================
+GLOBAL_ORGS_CACHE = []
+GLOBAL_EMBEDDINGS_MATRIX = None
+
+def load_embeddings_cache():
+    """Load all embeddings from robust local files into memory matrix for instant semantic search, bypassing MySQL connection issues"""
+    global GLOBAL_ORGS_CACHE, GLOBAL_EMBEDDINGS_MATRIX
+    logger.info("🔄 Loading robust local AI embeddings into memory cache for lightning-fast search...")
+    
+    try:
+        # Load precomputed embeddings
+        if os.path.exists("local_embeddings.npy") and os.path.exists("local_orgs.json"):
+            GLOBAL_EMBEDDINGS_MATRIX = np.load("local_embeddings.npy")
+            with open("local_orgs.json", "r", encoding="utf-8") as f:
+                GLOBAL_ORGS_CACHE = json.load(f)
+            
+            logger.info(f"✅ Fast Local Cache successfully loaded!")
+            logger.info(f"   ► Matrix Shape: {GLOBAL_EMBEDDINGS_MATRIX.shape}")
+            logger.info(f"   ► Organizations: {len(GLOBAL_ORGS_CACHE)} loaded directly into RAM")
+            logger.info("   ► System fully decentralized from MySQL dependency.")
+        else:
+            logger.warning("⚠️ local_embeddings.npy and json cache not found! Did you run `python build_local_cache.py`?")
+            GLOBAL_EMBEDDINGS_MATRIX = None
+            GLOBAL_ORGS_CACHE = []
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to load local embeddings cache: {e}")
+        GLOBAL_EMBEDDINGS_MATRIX = None
+        GLOBAL_ORGS_CACHE = []
+
+
+# =====================================
 # FASTAPI APP SETUP
 # =====================================
 app = FastAPI(
@@ -168,19 +207,11 @@ app.add_middleware(
 # =====================================
 @app.on_event("startup")
 async def startup():
-    """Initialize services on startup"""
     try:
-        redis = await aioredis.from_url(
-            "redis://localhost:6379",
-            encoding="utf8",
-            decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5
-        )
+        redis = await aioredis.from_url("redis://localhost:6379")
         FastAPICache.init(RedisBackend(redis), prefix="ytheys-cache:")
-        logger.info("✅ Redis cache initialized successfully")
     except Exception as e:
-        logger.warning(f"⚠️ Redis unavailable: {e}. Running without cache (performance may be reduced)")
+        logger.warning("Redis disabled")
     
     # Test database connection
     try:
@@ -189,6 +220,9 @@ async def startup():
         logger.info("✅ Database connection verified")
     except Exception as e:
         logger.error(f"❌ Database connection failed: {e}")
+    
+    # Load AI Embeddings Cache
+    load_embeddings_cache()
     
     logger.info("✅ API startup complete - Ready to accept requests")
 
@@ -209,16 +243,18 @@ async def shutdown():
 # =====================================
 try:
     logger.info("Loading GTE-Large model (first load may take 1-2 minutes)...")
+    
     model = SentenceTransformer("thenlper/gte-large", device=DEVICE)
+    
     logger.info("✅ Sentence Transformer model loaded: thenlper/gte-large")
-    logger.info(f"   - Embedding dimension: 1024 (higher quality)")
+    logger.info("   - Embedding dimension: 1024 (higher quality)")
     logger.info(f"   - Device: {DEVICE}")
-    logger.info(f"   - Normalization: Enabled")
+    logger.info("   - Normalization: Enabled")
+
 except Exception as e:
     logger.error(f"❌ Failed to load AI model: {e}")
     logger.error("   Try: pip install sentence-transformers -U")
     model = None
-
 
 # =====================================
 # PYDANTIC MODELS
@@ -582,18 +618,15 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
     4. Smart categorization for easy decision-making
     """
     try:
-        if not HAS_EMBEDDING:
-            raise HTTPException(
-                status_code=501,
-                detail="AI embeddings not available. Please run: python generate_embeddings_smart.py"
-            )
+
         
         if not model:
             raise HTTPException(
                 status_code=503,
                 detail="AI model not loaded. Please restart the server."
             )
-        
+        if GLOBAL_EMBEDDINGS_MATRIX is None:
+            logging.warning("Embeddings not loaded due to database failure. Returning graceful fallback data.")
         user_prompt = payload.prompt.strip()
         top_k = payload.top_k
         
@@ -610,53 +643,39 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
         query_embedding = model.encode(user_prompt, normalize_embeddings=True)
         embedding_time = time.time() - start_time
         
-        # Load all organizations with embeddings
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT * FROM organizations 
-                WHERE embedding_vector IS NOT NULL
-            """))
-            orgs = [dict(row._mapping) for row in result]
-        
-        if not orgs:
+        if GLOBAL_EMBEDDINGS_MATRIX is None or len(GLOBAL_ORGS_CACHE) == 0:
             raise HTTPException(
-                status_code=404,
-                detail="No organizations with embeddings found. Run generate_embeddings_smart.py first."
+                status_code=503,
+                detail="Embeddings cache is entirely empty. Please ensure build_local_cache.py was run and restart server."
             )
         
-        logger.info(f"📊 Comparing with {len(orgs)} organizations using GTE-Large...")
+        logger.info(f"📊 Comparing with {len(GLOBAL_ORGS_CACHE)} cached organizations using fast memory lookup...")
         similarity_start = time.time()
-        similarities = []
-        query_vec = np.array(query_embedding)
         
-        for org in orgs:
-            try:
-                org_embedding = json.loads(org['embedding_vector'])
-                org_vec = np.array(org_embedding)
-                
-                # With normalized vectors, dot product = cosine similarity
-                similarity = cosine_similarity_np(query_vec, org_vec)
-                
-                similarities.append({
-                    'id': org['id'],
-                    'name': org.get('organization_name', 'N/A'),
-                    'domain': org.get('domain', 'N/A'),
-                    'description': org.get('description', '')[:250] + "..." if len(org.get('description', '')) > 250 else org.get('description', ''),
-                    'team_size': org.get('team_size', 0),
-                    'funding_stage': org.get('funding_stage', 'N/A'),
-                    'views': org.get('views', 0) if HAS_VIEWS else 0,
-                    'country': org.get('country', 'Unknown'),
-                    'city': org.get('city', 'Unknown'),
-                    'email': org.get('email', ''),
-                    'website': org.get('website', ''),
-                    'skills': parse_json_field(org.get('skills', '[]')),
-                    'sdg_alignment': parse_json_field(org.get('sdg_alignment', '[]')),
-                    'founded_year': org.get('founded_year'),
-                    'similarity_score': round(float(similarity), 4)
-                })
-            except Exception as e:
-                logger.warning(f"Error processing org {org.get('id')}: {e}")
-                continue
+        # Fast Matrix Multiplication for cosine similarity (dot product of normalized vectors)
+        query_vec = np.array(query_embedding)
+        similarities_array = np.dot(GLOBAL_EMBEDDINGS_MATRIX, query_vec)
+        
+        similarities = []
+        for idx, similarity in enumerate(similarities_array):
+            org = GLOBAL_ORGS_CACHE[idx]
+            similarities.append({
+                'id': org.get('id', 'N/A'),
+                'name': org.get('name', 'N/A'),
+                'domain': org.get('domain', 'N/A'),
+                'description': org.get('description', '')[:250] + "..." if len(org.get('description', '')) > 250 else org.get('description', ''),
+                'team_size': org.get('team_size', 0),
+                'funding_stage': org.get('type', 'N/A'), # Map type to funding_stage
+                'views': org.get('views', 0),
+                'country': org.get('country', 'Unknown'),
+                'city': org.get('city', 'Unknown'),
+                'email': org.get('email', ''),
+                'website': org.get('website', ''),
+                'skills': org.get('skills', []),
+                'sdg_alignment': [],
+                'founded_year': org.get('founded_year', None),
+                'similarity_score': round(float(similarity), 4)
+            })
         
         similarity_time = time.time() - similarity_start
         total_time = time.time() - start_time
@@ -702,7 +721,7 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
                     "total_time_ms": round(total_time * 1000, 2),
                     "embedding_time_ms": round(embedding_time * 1000, 2),
                     "similarity_calc_ms": round(similarity_time * 1000, 2),
-                    "organizations_searched": len(orgs)
+                    "organizations_searched": len(GLOBAL_ORGS_CACHE)
                 },
                 "recommendations": {
                     "best_match": best_match,

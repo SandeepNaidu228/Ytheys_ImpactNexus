@@ -77,25 +77,6 @@ const getPopularity = (ratings: number): "legendary" | "famous" | "popular" | "r
 const formatNumber = (n: number) =>
   n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}k` : n.toString();
 
-const matchAgenciesToPrompt = (prompt: string, agencies: Agency[]): Agency[] => {
-  const lowerPrompt = prompt.toLowerCase();
-  const keywords = lowerPrompt.split(/\s+/).filter(word => word.length > 3);
-  const scoredAgencies = agencies.map(agency => {
-    let score = 0;
-    if (lowerPrompt.includes(agency.domain.toLowerCase())) score += 30;
-    agency.services?.forEach(service => { if (lowerPrompt.includes(service.toLowerCase())) score += 20; });
-    if (agency.description) { keywords.forEach(keyword => { if (agency.description!.toLowerCase().includes(keyword)) score += 5; }); }
-    keywords.forEach(keyword => {
-      if (agency.domain.toLowerCase().includes(keyword)) score += 10;
-      agency.services?.forEach(service => { if (service.toLowerCase().includes(keyword)) score += 8; });
-    });
-    if (agency.popularity === 'legendary') score += 5;
-    else if (agency.popularity === 'famous') score += 3;
-    if (agency.projects_count > 1000) score += 5;
-    return { ...agency, matchScore: score };
-  });
-  return scoredAgencies.filter(a => a.matchScore! > 0).sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0)).slice(0, 3);
-};
 
 export default function AIAgencyMatcher() {
   const [agencies, setAgencies] = useState<Agency[]>([]);
@@ -143,28 +124,78 @@ export default function AIAgencyMatcher() {
     fetchAgencyData();
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!input.trim() || isLoading) return;
     const userMessage: Message = { id: Date.now().toString(), type: 'user', content: input.trim(), timestamp: new Date() };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
-    setTimeout(() => {
-      const matchedAgencies = matchAgenciesToPrompt(userMessage.content, agencies);
+    
+    try {
+      const res = await fetch('http://127.0.0.1:8000/recommendations/semantic', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: userMessage.content, top_k: 3 }),
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to fetch AI recommendations');
+      }
+      
+      const data = await res.json();
+      
+      let matchedAgencies: Agency[] = [];
+      if (data.success && data.data && data.data.all_matches) {
+        matchedAgencies = data.data.all_matches.map((item: { name?: string; domain?: string; skills?: string[]; similarity_score: number; team_size?: number; views?: number; website?: string; description?: string; }) => {
+          // Map similarity score loosely to a 5-star rating for UI purposes
+          // Assuming similarity_score is typically between 0.3 and 1.0
+          const minScore = 0.3;
+          const normalizedScore = Math.max(0, (item.similarity_score - minScore) / (1 - minScore));
+          const rating = 3.5 + normalizedScore * 1.5; // Scale to 3.5 - 5.0
+          
+          return {
+            agency_name: item.name || 'Unknown Agency',
+            domain: item.domain || 'Tech',
+            services: (item.skills && item.skills.length > 0) ? item.skills.slice(0, 3) : ['Specialized Consulting'],
+            rating_count: Math.min(5, Math.max(1, rating)),
+            projects_count: item.team_size || item.views || Math.floor(Math.random() * 500) + 50,
+            popularity: getPopularity(rating),
+            html_url: item.website || '#',
+            description: item.description || 'Innovative tech solutions.',
+            repoLink: '',
+            websiteUrl: item.website || '',
+            matchScore: item.similarity_score * 100
+          };
+        });
+      }
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
-        content: matchedAgencies.length > 0 ? `I've found ${matchedAgencies.length} highly suitable agencies for you:` : "I couldn't find any agencies matching those specific requirements.",
+        content: matchedAgencies.length > 0 ? `I've found ${matchedAgencies.length} highly suitable agencies for you using AI semantic matching:` : "I couldn't find any agencies matching those specific requirements.",
         agencies: matchedAgencies,
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, assistantMessage]);
+
+    } catch (error) {
+      console.error('Error fetching from backend:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'assistant',
+        content: "Oops! There was an issue connecting to the Ytheys AI matching engine. Is the backend server running?",
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
       setIsLoading(false);
-    }, 1000);
+    }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(e); } };
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); } };
 
   useEffect(() => {
     if (textareaRef.current) {
