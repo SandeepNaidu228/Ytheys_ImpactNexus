@@ -120,41 +120,30 @@ GLOBAL_ORGS_CACHE = []
 GLOBAL_EMBEDDINGS_MATRIX = None
 
 def load_embeddings_cache():
-    """Load all embeddings from DB into memory matrix for instant semantic search"""
+    """Load all embeddings from robust local files into memory matrix for instant semantic search, bypassing MySQL connection issues"""
     global GLOBAL_ORGS_CACHE, GLOBAL_EMBEDDINGS_MATRIX
-    logger.info("🔄 Loading AI embeddings into memory cache for lightning-fast search...")
-    if not HAS_EMBEDDING:
-        logger.warning("⚠️ No embedding column detected. Skipping cache load.")
-        return
-        
+    logger.info("🔄 Loading robust local AI embeddings into memory cache for lightning-fast search...")
+    
     try:
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT * FROM organizations 
-                WHERE embedding_vector IS NOT NULL
-            """))
-            orgs = [dict(row._mapping) for row in result]
+        # Load precomputed embeddings
+        if os.path.exists("local_embeddings.npy") and os.path.exists("local_orgs.json"):
+            GLOBAL_EMBEDDINGS_MATRIX = np.load("local_embeddings.npy")
+            with open("local_orgs.json", "r", encoding="utf-8") as f:
+                GLOBAL_ORGS_CACHE = json.load(f)
             
-        if not orgs:
-            logger.warning("⚠️ No organizations with embeddings found in DB.")
-            return
+            logger.info(f"✅ Fast Local Cache successfully loaded!")
+            logger.info(f"   ► Matrix Shape: {GLOBAL_EMBEDDINGS_MATRIX.shape}")
+            logger.info(f"   ► Organizations: {len(GLOBAL_ORGS_CACHE)} loaded directly into RAM")
+            logger.info("   ► System fully decentralized from MySQL dependency.")
+        else:
+            logger.warning("⚠️ local_embeddings.npy and json cache not found! Did you run `python build_local_cache.py`?")
+            GLOBAL_EMBEDDINGS_MATRIX = None
+            GLOBAL_ORGS_CACHE = []
             
-        valid_orgs = []
-        vectors = []
-        for org in orgs:
-            try:
-                if org.get('embedding_vector'):
-                    vec = json.loads(org['embedding_vector'])
-                    vectors.append(vec)
-                    valid_orgs.append(org)
-            except Exception as e:
-                logger.debug(f"Error parsing embedding for org {org.get('id')}: {e}")
-                
-        GLOBAL_ORGS_CACHE = valid_orgs
-        GLOBAL_EMBEDDINGS_MATRIX = np.array(vectors)
-        logger.info(f"✅ Successfully cached {len(valid_orgs)} embeddings! Search will be instantaneous.")
     except Exception as e:
-        logger.error(f"❌ Failed to load embeddings cache: {e}")
+        logger.error(f"❌ Failed to load local embeddings cache: {e}")
+        GLOBAL_EMBEDDINGS_MATRIX = None
+        GLOBAL_ORGS_CACHE = []
 
 
 # =====================================
@@ -638,36 +627,6 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
             )
         if GLOBAL_EMBEDDINGS_MATRIX is None:
             logging.warning("Embeddings not loaded due to database failure. Returning graceful fallback data.")
-            return {
-                "success": True,
-                "data": {
-                    "prompt": payload.prompt,
-                    "total_matches": 3,
-                    "showing": 3,
-                    "model_info": {"model": "fallback_mock", "dimensions": 1024, "provider": "Ytheys Fallback"},
-                    "caching": {"status": "inactive"},
-                    "performance": {"total_time_ms": 5.0, "embedding_time_ms": 2.0, "similarity_calc_ms": 3.0, "organizations_searched": 0},
-                    "recommendations": {"best_match": 1, "score_range": "0.85 - 0.95"},
-                    "all_matches": [
-                        {
-                            "id": "fallback1", "name": "AI Startup Labs", "domain": "AI/Machine Learning",
-                            "similarity_score": 0.95, "skills": ["Python", "Machine Learning"],
-                            "description": "Deep learning and ML specialists.", "team_size": 10, "views": 250
-                        },
-                        {
-                            "id": "fallback2", "name": "DevForge Agency", "domain": "Web Development",
-                            "similarity_score": 0.89, "skills": ["React", "TypeScript", "Next.js"],
-                            "description": "Modern web development and frontend experts.", "team_size": 25, "views": 400
-                        },
-                        {
-                            "id": "fallback3", "name": "CloudOps Solutions", "domain": "DevOps & Cloud",
-                            "similarity_score": 0.85, "skills": ["AWS", "Kubernetes", "Docker"],
-                            "description": "Cloud infrastructure and scalability architects.", "team_size": 15, "views": 150
-                        }
-                    ]
-                }
-            }
-        
         user_prompt = payload.prompt.strip()
         top_k = payload.top_k
         
@@ -687,10 +646,10 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
         if GLOBAL_EMBEDDINGS_MATRIX is None or len(GLOBAL_ORGS_CACHE) == 0:
             raise HTTPException(
                 status_code=503,
-                detail="Embeddings cache is empty or not loaded. Please ensure generate_embeddings_smart.py was run and restart server."
+                detail="Embeddings cache is entirely empty. Please ensure build_local_cache.py was run and restart server."
             )
         
-        logger.info(f"📊 Comparing with {len(GLOBAL_ORGS_CACHE)} cached organizations using GTE-Large...")
+        logger.info(f"📊 Comparing with {len(GLOBAL_ORGS_CACHE)} cached organizations using fast memory lookup...")
         similarity_start = time.time()
         
         # Fast Matrix Multiplication for cosine similarity (dot product of normalized vectors)
@@ -701,20 +660,20 @@ async def smart_semantic_search(payload: SimpleSearchPayload):
         for idx, similarity in enumerate(similarities_array):
             org = GLOBAL_ORGS_CACHE[idx]
             similarities.append({
-                'id': org['id'],
-                'name': org.get('organization_name', 'N/A'),
+                'id': org.get('id', 'N/A'),
+                'name': org.get('name', 'N/A'),
                 'domain': org.get('domain', 'N/A'),
                 'description': org.get('description', '')[:250] + "..." if len(org.get('description', '')) > 250 else org.get('description', ''),
                 'team_size': org.get('team_size', 0),
-                'funding_stage': org.get('funding_stage', 'N/A'),
-                'views': org.get('views', 0) if HAS_VIEWS else 0,
+                'funding_stage': org.get('type', 'N/A'), # Map type to funding_stage
+                'views': org.get('views', 0),
                 'country': org.get('country', 'Unknown'),
                 'city': org.get('city', 'Unknown'),
                 'email': org.get('email', ''),
                 'website': org.get('website', ''),
-                'skills': parse_json_field(org.get('skills', '[]')),
-                'sdg_alignment': parse_json_field(org.get('sdg_alignment', '[]')),
-                'founded_year': org.get('founded_year'),
+                'skills': org.get('skills', []),
+                'sdg_alignment': [],
+                'founded_year': org.get('founded_year', None),
                 'similarity_score': round(float(similarity), 4)
             })
         
